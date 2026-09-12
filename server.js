@@ -122,6 +122,19 @@ db.saveRoomForUser = (userId, roomCode, roomName, password, callback) => {
     );
 };
 
+// MÉTODOS NUEVOS PARA EDITAR Y ELIMINAR SALAS POR ID
+db.updateRoomDetails = (roomId, userId, newRoomName, newPassword, callback) => {
+    db.run(
+        `UPDATE rooms SET room_name = ?, password = ? WHERE id = ? AND user_id = ?`,
+        [newRoomName, newPassword, roomId, userId],
+        callback
+    );
+};
+
+db.deleteRoomById = (roomId, userId, callback) => {
+    db.run(`DELETE FROM rooms WHERE id = ? AND user_id = ?`, [roomId, userId], callback);
+};
+
 db.updateRoom = (userId, roomName, password, callback) => {
     db.run(
         `UPDATE rooms SET room_name = ?, password = ? WHERE user_id = ?`,
@@ -286,6 +299,39 @@ io.on('connection', (socket) => {
             });
         });
     });
+
+    // --- EVENTOS SOCKET PARA EDITAR Y ELIMINAR SALAS ---
+    socket.on('update_room_info', ({ token, roomId, roomName, password }) => {
+        jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+            if (err) return socket.emit('auth_error', { message: 'No autorizado' });
+
+            db.updateRoomDetails(roomId, decodedUser.id, roomName, password, (dbErr) => {
+                if (dbErr) {
+                    socket.emit('room_error', { message: 'Error al actualizar la sala' });
+                } else {
+                    socket.emit('room_updated_success', { message: 'Sala actualizada con éxito', roomId, roomName, password });
+                }
+            });
+        });
+    });
+
+    socket.on('delete_room', ({ token, roomId, roomCode }) => {
+        jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+            if (err) return socket.emit('auth_error', { message: 'No autorizado' });
+
+            db.deleteRoomById(roomId, decodedUser.id, (dbErr) => {
+                if (dbErr) {
+                    socket.emit('room_error', { message: 'Error al eliminar la sala' });
+                } else {
+                    if (activeRooms.has(roomCode)) {
+                        activeRooms.delete(roomCode);
+                    }
+                    socket.emit('room_deleted_success', { roomId, roomCode });
+                }
+            });
+        });
+    });
+    // --------------------------------------------------
 
     socket.on('join_room', ({ roomCode, password }) => {
         db.getRoom(roomCode, (err, roomData) => {

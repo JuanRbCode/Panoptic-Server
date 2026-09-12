@@ -29,8 +29,7 @@ function initTables() {
             password TEXT NOT NULL,
             user_id INTEGER,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-)`);
-
+        )`);
 
         db.run(`CREATE TABLE IF NOT EXISTS devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +74,6 @@ db.verifyAdmin = (identifier, pass, callback) => {
     });
 };
 
-// Actualizar datos de usuario (nombre de usuario o contraseña opcional)
 db.updateUser = (userId, newUsername, newPassword, callback) => {
     if (newPassword) {
         bcrypt.hash(newPassword, 10, (err, hash) => {
@@ -95,7 +93,6 @@ db.updateUser = (userId, newUsername, newPassword, callback) => {
     }
 };
 
-// Eliminar usuario por completo (las salas y dispositivos se borran solos por CASCADE)
 db.deleteUser = (userId, callback) => {
     db.run(`DELETE FROM users WHERE id = ?`, [userId], callback);
 };
@@ -107,6 +104,19 @@ db.saveRoomForUser = (userId, roomCode, roomName, password, callback) => {
         [roomName, roomCode, password, userId],
         callback
     );
+};
+
+// MÉTODOS ESPECÍFICOS AÑADIDOS PARA EDITAR Y ELIMINAR POR ID
+db.updateRoomDetails = (roomId, userId, newRoomName, newPassword, callback) => {
+    db.run(
+        `UPDATE rooms SET room_name = ?, password = ? WHERE id = ? AND user_id = ?`,
+        [newRoomName, newPassword, roomId, userId],
+        callback
+    );
+};
+
+db.deleteRoomById = (roomId, userId, callback) => {
+    db.run(`DELETE FROM rooms WHERE id = ? AND user_id = ?`, [roomId, userId], callback);
 };
 
 db.updateRoom = (userId, roomName, password, callback) => {
