@@ -90,32 +90,26 @@ io.on('connection', (socket) => {
     });
 
     // --- RESTAURAR SESIÓN ---
+    // --- RESTAURAR SESIÓN Y SALAS ---
     socket.on('restore_user_session', ({ token }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) return socket.emit('auth_error', { message: 'Token inválido' });
 
-            db.getRoomByUser(decodedUser.id, (dbErr, roomData) => {
-                if (dbErr || !roomData) {
-                    socket.emit('no_active_room', { message: 'Sin sala activa' });
+            db.getRoomsByUser(decodedUser.id, (dbErr, roomsList) => {
+                if (dbErr || !roomsList) {
+                    socket.emit('no_active_rooms', { message: 'Sin salas activas' });
                     return;
                 }
 
-                const roomCode = roomData.room_code;
-                if (!activeRooms.has(roomCode)) {
-                    activeRooms.set(roomCode, { password: roomData.password, devices: new Map() });
-                }
-
-                const room = activeRooms.get(roomCode);
-                socket.join(roomCode);
-                socket.roomCode = roomCode;
-                socket.isPanel = true;
-
-                socket.emit('room_restored', {
-                    roomCode: roomCode,
-                    roomName: roomData.room_name,
-                    password: roomData.password,
-                    devices: Array.from(room.devices.values())
+                // Asegurarnos de que todas las salas estén activas en memoria (activeRooms)
+                roomsList.forEach(r => {
+                    if (!activeRooms.has(r.room_code)) {
+                        activeRooms.set(r.room_code, { password: r.password, devices: new Map() });
+                    }
                 });
+
+                socket.isPanel = true;
+                socket.emit('session_restored', { rooms: roomsList });
             });
         });
     });

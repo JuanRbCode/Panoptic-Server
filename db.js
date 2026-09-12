@@ -27,9 +27,10 @@ function initTables() {
             room_name TEXT NOT NULL,
             room_code TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
-            user_id INTEGER UNIQUE,
+            user_id INTEGER,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-        )`);
+)`);
+
 
         db.run(`CREATE TABLE IF NOT EXISTS devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,12 +103,7 @@ db.deleteUser = (userId, callback) => {
 // --- SALAS ---
 db.saveRoomForUser = (userId, roomCode, roomName, password, callback) => {
     db.run(
-        `INSERT INTO rooms (room_name, room_code, password, user_id) 
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(user_id) DO UPDATE SET 
-         room_name = excluded.room_name,
-         room_code = excluded.room_code,
-         password = excluded.password`,
+        `INSERT INTO rooms (room_name, room_code, password, user_id) VALUES (?, ?, ?, ?)`,
         [roomName, roomCode, password, userId],
         callback
     );
@@ -131,6 +127,10 @@ db.getRoomByUser = (userId, callback) => {
 
 db.getRoom = (roomCode, callback) => {
     db.get(`SELECT * FROM rooms WHERE room_code = ?`, [roomCode], callback);
+};
+
+db.getRoomsByUser = (userId, callback) => {
+    db.all(`SELECT * FROM rooms WHERE user_id = ?`, [userId], callback);
 };
 
 // --- DISPOSITIVOS ---
