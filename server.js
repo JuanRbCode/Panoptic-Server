@@ -3,7 +3,9 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const db = require('./db');
+const sqlite3 = require('sqlite3').verbose();
+const bcrypt = require('bcryptjs');
+const path = require('path');
 
 const app = express();
 app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
@@ -16,10 +18,158 @@ const io = new Server(server, {
 const JWT_SECRET = process.env.JWT_SECRET || 'clave_secreta_super_segura_mirror_dark';
 const activeRooms = new Map();
 
+// --- CONFIGURACIÓN DE BASE DE DATOS SQLITE ---
+const dbPath = path.resolve(__dirname, 'panoptic.db');
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error('[-] Error al conectar con SQLite:', err.message);
+    } else {
+        console.log('[+] Conectado a la base de datos SQLite.');
+        initTables();
+    }
+});
+
+function initTables() {
+    db.serialize(() => {
+        db.run(`CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            correo TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_name TEXT NOT NULL,
+            room_code TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            user_id INTEGER,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_socket_id TEXT UNIQUE NOT NULL,
+            device_name TEXT NOT NULL,
+            propietario TEXT,
+            room_code TEXT,
+            battery_level INTEGER DEFAULT 0,
+            last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(room_code) REFERENCES rooms(room_code) ON DELETE CASCADE
+        )`);
+    });
+}
+
+// --- MÉTODOS DE BASE DE DATOS ---
+db.registerAdmin = (nombre, username, correo, pass, callback) => {
+    db.get(`SELECT id FROM users WHERE username = ? OR correo = ?`, [username, correo], (err, row) => {
+        if (err) return callback(err);
+        if (row) return callback(new Error('El nombre de usuario o correo ya están registrados.'));
+
+        bcrypt.hash(pass, 10, (err, hash) => {
+            if (err) return callback(err);
+            db.run(
+                `INSERT INTO users (nombre, username, correo, password) VALUES (?, ?, ?, ?)`,
+                [nombre, username, correo, hash],
+                function (err) {
+                    callback(err, this ? this.lastID : null);
+                }
+            );
+        });
+    });
+};
+
+db.verifyAdmin = (identifier, pass, callback) => {
+    db.get(`SELECT * FROM users WHERE username = ? OR correo = ?`, [identifier, identifier], (err, user) => {
+        if (err || !user) return callback(null, null);
+
+        bcrypt.compare(pass, user.password, (err, match) => {
+            if (err || !match) return callback(null, null);
+            callback(null, user);
+        });
+    });
+};
+
+db.updateUser = (userId, newUsername, newPassword, callback) => {
+    if (newPassword) {
+        bcrypt.hash(newPassword, 10, (err, hash) => {
+            if (err) return callback(err);
+            db.run(
+                `UPDATE users SET username = ?, password = ? WHERE id = ?`,
+                [newUsername, hash, userId],
+                callback
+            );
+        });
+    } else {
+        db.run(
+            `UPDATE users SET username = ? WHERE id = ?`,
+            [newUsername, userId],
+            callback
+        );
+    }
+};
+
+db.deleteUser = (userId, callback) => {
+    db.run(`DELETE FROM users WHERE id = ?`, [userId], callback);
+};
+
+db.saveRoomForUser = (userId, roomCode, roomName, password, callback) => {
+    db.run(
+        `INSERT INTO rooms (room_name, room_code, password, user_id) VALUES (?, ?, ?, ?)`,
+        [roomName, roomCode, password, userId],
+        callback
+    );
+};
+
+db.updateRoom = (userId, roomName, password, callback) => {
+    db.run(
+        `UPDATE rooms SET room_name = ?, password = ? WHERE user_id = ?`,
+        [roomName, password, userId],
+        callback
+    );
+};
+
+db.deleteRoomByUser = (userId, callback) => {
+    db.run(`DELETE FROM rooms WHERE user_id = ?`, [userId], callback);
+};
+
+db.getRoomByUser = (userId, callback) => {
+    db.get(`SELECT * FROM rooms WHERE user_id = ?`, [userId], callback);
+};
+
+db.getRoomsByUser = (userId, callback) => {
+    db.all(`SELECT * FROM rooms WHERE user_id = ?`, [userId], callback);
+};
+
+db.getRoom = (roomCode, callback) => {
+    db.get(`SELECT * FROM rooms WHERE room_code = ?`, [roomCode], callback);
+};
+
+db.upsertDevice = (socketId, deviceName, propietario, roomCode, battery = 0, callback) => {
+    db.run(
+        `INSERT INTO devices (device_socket_id, device_name, propietario, room_code, battery_level, last_seen) 
+         VALUES (?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(device_socket_id) DO UPDATE SET 
+         device_name = excluded.device_name, 
+         propietario = excluded.propietario,
+         battery_level = excluded.battery_level,
+         room_code = excluded.room_code,
+         last_seen = datetime('now')`,
+        [socketId, deviceName, propietario, roomCode, battery],
+        callback || (() => { })
+    );
+};
+
+db.removeDevice = (socketId, callback) => {
+    db.run(`DELETE FROM devices WHERE device_socket_id = ?`, [socketId], callback || (() => { }));
+};
+
+
+// --- GESTIÓN DE SOCKET.IO ---
 io.on('connection', (socket) => {
     console.log(`[+] Conexión establecida: ${socket.id}`);
 
-    // --- AUTENTICACIÓN Y REGISTRO ---
     socket.on('admin_login', ({ identifier, pass }) => {
         db.verifyAdmin(identifier, pass, (err, user) => {
             if (err || !user) {
@@ -45,7 +195,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- ACTUALIZAR DATOS DE USUARIO (Username / Password) ---
     socket.on('update_user_profile', ({ token, newUsername, newPassword }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) {
@@ -55,7 +204,7 @@ io.on('connection', (socket) => {
 
             db.updateUser(decodedUser.id, newUsername, newPassword, (dbErr) => {
                 if (dbErr) {
-                    socket.emit('user_update_error', { message: 'Error al actualizar el usuario (el username ya podría estar en uso)' });
+                    socket.emit('user_update_error', { message: 'Error al actualizar el usuario' });
                 } else {
                     const newToken = jwt.sign(
                         { id: decodedUser.id, username: newUsername, correo: decodedUser.correo, nombre: decodedUser.nombre },
@@ -68,14 +217,15 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- ELIMINAR CUENTA DE USUARIO ---
     socket.on('delete_user_account', ({ token }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) return socket.emit('auth_error', { message: 'No autorizado' });
 
-            db.getRoomByUser(decodedUser.id, (__, roomData) => {
-                if (roomData && activeRooms.has(roomData.room_code)) {
-                    activeRooms.delete(roomData.room_code);
+            db.getRoomsByUser(decodedUser.id, (__, roomsList) => {
+                if (roomsList) {
+                    roomsList.forEach(r => {
+                        if (activeRooms.has(r.room_code)) activeRooms.delete(r.room_code);
+                    });
                 }
 
                 db.deleteUser(decodedUser.id, (dbErr) => {
@@ -89,8 +239,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- RESTAURAR SESIÓN ---
-    // --- RESTAURAR SESIÓN Y SALAS ---
     socket.on('restore_user_session', ({ token }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) return socket.emit('auth_error', { message: 'Token inválido' });
@@ -101,7 +249,6 @@ io.on('connection', (socket) => {
                     return;
                 }
 
-                // Asegurarnos de que todas las salas estén activas en memoria (activeRooms)
                 roomsList.forEach(r => {
                     if (!activeRooms.has(r.room_code)) {
                         activeRooms.set(r.room_code, { password: r.password, devices: new Map() });
@@ -114,7 +261,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- CREAR SALA :> ---
     socket.on('create_room', ({ token, roomName, password }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) return socket.emit('auth_error', { message: 'No autorizado' });
@@ -132,51 +278,15 @@ io.on('connection', (socket) => {
                 socket.roomCode = roomCode;
                 socket.isPanel = true;
 
-                socket.emit('room_created', { roomCode, roomName, password });
+                const roomObj = { room_code: roomCode, room_name: roomName, password: password };
+                socket.emit('room_created', roomObj);
+                
                 const room = activeRooms.get(roomCode);
-                socket.emit('update_devices', Array.from(room.devices.values()));
+                socket.emit('update_devices', { roomCode, devices: Array.from(room.devices.values()) });
             });
         });
     });
 
-    // --- EDITAR SALA ---
-    socket.on('update_room', ({ token, roomName, password }) => {
-        jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
-            if (err) return socket.emit('auth_error', { message: 'No autorizado' });
-
-            db.updateRoom(decodedUser.id, roomName, password, (dbErr) => {
-                if (dbErr) return socket.emit('room_error', { message: 'Error al actualizar la sala' });
-
-                db.getRoomByUser(decodedUser.id, (_, roomData) => {
-                    if (roomData && activeRooms.has(roomData.room_code)) {
-                        const room = activeRooms.get(roomData.room_code);
-                        room.password = password;
-                    }
-                    socket.emit('room_updated', { message: 'Sala actualizada con éxito', roomName, password });
-                });
-            });
-        });
-    });
-
-    // --- ELIMINAR SALA ---
-    socket.on('delete_room', ({ token }) => {
-        jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
-            if (err) return socket.emit('auth_error', { message: 'No autorizado' });
-
-            db.getRoomByUser(decodedUser.id, (_, roomData) => {
-                if (roomData && activeRooms.has(roomData.room_code)) {
-                    activeRooms.delete(roomData.room_code);
-                }
-
-                db.deleteRoomByUser(decodedUser.id, (dbErr) => {
-                    if (dbErr) return socket.emit('room_error', { message: 'Error al eliminar la sala' });
-                    socket.emit('room_deleted', { message: 'Sala eliminada con éxito' });
-                });
-            });
-        });
-    });
-
-    // --- REGISTRO DE DISPOSITIVO MÓVIL ---
     socket.on('register_phone', (data) => {
         const { roomCode, password, name, propietario, battery } = data;
 
@@ -206,11 +316,10 @@ io.on('connection', (socket) => {
             room.devices.set(socket.id, deviceInfo);
             db.upsertDevice(socket.id, deviceInfo.name, deviceInfo.propietario, roomCode, deviceInfo.battery);
 
-            io.to(roomCode).emit('update_devices', Array.from(room.devices.values()));
+            io.to(roomCode).emit('update_devices', { roomCode, devices: Array.from(room.devices.values()) });
         });
     });
 
-    // --- ELIMINAR / EXPULSAR DISPOSITIVO ESPECÍFICO ---
     socket.on('kick_device', ({ targetId }) => {
         const roomCode = socket.roomCode;
         if (!roomCode || !activeRooms.has(roomCode)) return;
@@ -221,12 +330,10 @@ io.on('connection', (socket) => {
             db.removeDevice(targetId);
 
             io.to(targetId).emit('kicked_from_room');
-            io.to(roomCode).emit('update_devices', Array.from(room.devices.values()));
-            console.log(`[-] Dispositivo expulsado de sala [${roomCode}]: ${targetId}`);
+            io.to(roomCode).emit('update_devices', { roomCode, devices: Array.from(room.devices.values()) });
         }
     });
 
-    // --- STREAMING Y COMANDOS ---
     socket.on('send_command_to_device', (data) => {
         const roomCode = socket.roomCode;
         if (!roomCode) return;
@@ -257,7 +364,6 @@ io.on('connection', (socket) => {
         io.to(roomCode).emit('audio_chunk', { deviceId: socket.id, chunk: base64Audio });
     });
 
-    // --- DESCONEXIÓN CON LOG DETALLADO ---
     socket.on('disconnect', (reason) => {
         console.log(`[-] Desconectado (${reason}): ${socket.id}`);
 
@@ -267,7 +373,7 @@ io.on('connection', (socket) => {
             if (room.devices.has(socket.id)) {
                 room.devices.delete(socket.id);
                 db.removeDevice(socket.id);
-                io.to(roomCode).emit('update_devices', Array.from(room.devices.values()));
+                io.to(roomCode).emit('update_devices', { roomCode, devices: Array.from(room.devices.values()) });
             }
         }
     });
