@@ -114,7 +114,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- CREAR SALA ---
+    // --- CREAR SALA :> ---
     socket.on('create_room', ({ token, roomName, password }) => {
         jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
             if (err) return socket.emit('auth_error', { message: 'No autorizado' });
