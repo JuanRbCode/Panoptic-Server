@@ -287,6 +287,26 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('join_room', ({ roomCode, password }) => {
+        db.getRoom(roomCode, (err, roomData) => {
+            if (err || !roomData || roomData.password !== password) {
+                socket.emit('room_error', { message: 'Contraseña incorrecta o sala no encontrada' });
+                return;
+            }
+
+            if (!activeRooms.has(roomCode)) {
+                activeRooms.set(roomCode, { password: roomData.password, devices: new Map() });
+            }
+
+            socket.join(roomCode);
+            socket.roomCode = roomCode;
+            socket.isPanel = true;
+
+            const room = activeRooms.get(roomCode);
+            socket.emit('room_joined', { roomCode, devices: Array.from(room.devices.values()) });
+        });
+    });
+
     socket.on('register_phone', (data) => {
         const { roomCode, password, name, propietario, battery } = data;
 
