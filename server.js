@@ -146,38 +146,50 @@ io.on('connection', (socket) => {
     });
 
     // 2. Registro del dispositivo móvil validando la Sala (Código y Contraseña)
+    // Ejemplo de cómo debe lucir el manejador en tu servidor Node.js
     socket.on('register_device_to_room', async (data) => {
-        const { deviceUid, name, roomCode, roomPassword } = data;
-
         try {
-            const [rooms] = await pool.query('SELECT * FROM rooms WHERE codigo = ?', [roomCode]);
-            if (rooms.length === 0) {
+            const { deviceUid, name, roomCode, roomPassword, battery } = data;
+
+            // 1. Buscar la sala en tu base de datos MySQL (tabla rooms)
+            const room = await db.query('SELECT * FROM rooms WHERE codigo = ?', [roomCode]);
+
+            if (!room || room.length === 0) {
                 socket.emit('room_auth_error', { message: 'La sala no existe' });
                 return;
             }
 
-            const room = rooms[0];
-            const passMatch = await bcrypt.compare(roomPassword, room.contrasena);
-            if (!passMatch) {
-                socket.emit('room_auth_error', { message: 'Contraseña de sala incorrecta' });
+            // 2. Validar contraseña con bcrypt
+            const isValidPassword = await bcrypt.compare(roomPassword, room[0].contrasena);
+            if (!isValidPassword) {
+                socket.emit('room_auth_error', { message: 'Contraseña incorrecta' });
                 return;
             }
 
-            // Unir a la sala de socket.io
-            socket.join(`room_${roomCode}`);
+            // 3. Unir el socket a la sala de Socket.io
+            socket.join(roomCode);
 
-            connectedDevices.set(socket.id, {
-                id: socket.id,
+            // 4. Guardar el dispositivo en la sesión activa de la sala (en memoria o estructura del servidor)
+            // Por ejemplo, asociando el socket.id con los datos del teléfono
+            global.activeDevices = global.activeDevices || {};
+            global.activeDevices[socket.id] = {
+                socketId: socket.id,
                 deviceUid,
-                name: name || `Android Node`,
+                name: name || 'Android Device',
                 roomCode,
-                ip: socket.handshake.address
-            });
+                battery: battery || 100
+            };
 
-            console.log(`[📱] Dispositivo registrado en sala [${roomCode}]`);
-            io.to(`room_${roomCode}`).emit('update_devices', Array.from(connectedDevices.values()).filter(d => d.roomCode === roomCode));
-        } catch (err) {
-            console.error('Error al registrar dispositivo:', err);
+            // 5. ¡LO MÁS IMPORTANTE!: Notificar al panel web de esta sala que hay un nuevo nodo activo
+            const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === roomCode);
+
+            // El servidor web escucha este evento para pintar las tarjetas en pantalla
+            io.to(roomCode).emit('update_devices', devicesInRoom);
+
+            console.log(`Dispositivo ${name} aceptado en la sala ${roomCode}`);
+
+        } catch (error) {
+            console.error('Error en registro de dispositivo:', error);
         }
     });
 
