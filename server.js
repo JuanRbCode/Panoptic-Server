@@ -1,5 +1,5 @@
 const express = require('express');
-const http = require('http');
+const http = http = require('http');
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
@@ -23,38 +23,38 @@ const JWT_SECRET = process.env.JWT_SECRET || 'clave_secreta_super_segura_mirror_
 async function initDB() {
     try {
         await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        correo VARCHAR(100) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+          CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            correo VARCHAR(100) UNIQUE NOT NULL,
+            password VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
 
         await pool.query(`
-      CREATE TABLE IF NOT EXISTS rooms (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(100) NOT NULL,
-        codigo VARCHAR(10) UNIQUE NOT NULL,
-        contrasena VARCHAR(255) NOT NULL,
-        owner_id INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+          CREATE TABLE IF NOT EXISTS rooms (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            nombre VARCHAR(100) NOT NULL,
+            codigo VARCHAR(10) UNIQUE NOT NULL,
+            contrasena VARCHAR(255) NOT NULL,
+            owner_id INT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+          )
+        `);
 
         await pool.query(`
-      CREATE TABLE IF NOT EXISTS devices (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        device_uid VARCHAR(100) UNIQUE NOT NULL,
-        nombre VARCHAR(100) NOT NULL,
-        room_id INT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
-      )
-    `);
+          CREATE TABLE IF NOT EXISTS devices (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            device_uid VARCHAR(100) UNIQUE NOT NULL,
+            nombre VARCHAR(100) NOT NULL,
+            room_id INT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+          )
+        `);
         console.log('[Database] Tablas verificadas/creadas correctamente en MySQL.');
     } catch (err) {
         console.error('[Database Error] Error al inicializar tablas:', err);
@@ -123,11 +123,19 @@ app.post('/api/rooms/create', async (req, res) => {
     }
 });
 
+// Obtener salas (Ruta REST independiente fuera de la conexión de sockets)
+app.get('/api/rooms', async (req, res) => {
+    try {
+        const [rooms] = await pool.query('SELECT * FROM rooms');
+        res.json({ success: true, rooms });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // ----------------------------------------------------
 // WEBSOCKETS (PANEL Y DISPOSITIVOS MÓVILES)
 // ----------------------------------------------------
-
-let connectedDevices = new Map();
 
 io.on('connection', (socket) => {
     console.log(`[+] Conexión establecida: ${socket.id}`);
@@ -145,44 +153,59 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 1.1 NUEVO: Permitir que el panel web se una a la sala de sockets seleccionada
+    socket.on('join_room_panel', (roomCode) => {
+        const formattedRoomCode = roomCode ? roomCode.trim().toUpperCase() : '';
+        socket.join(formattedRoomCode);
+        console.log(`[🖥️ Panel Web] Se unió a la sala socket: ${formattedRoomCode}`);
+
+        // Enviar la lista actual de dispositivos de esa sala de inmediato al panel
+        global.activeDevices = global.activeDevices || {};
+        const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === formattedRoomCode);
+        socket.emit('update_devices', devicesInRoom);
+    });
+
     // 2. Registro del dispositivo móvil validando la Sala (Código y Contraseña)
-    // Ejemplo de cómo debe lucir el manejador en tu servidor Node.js
     socket.on('register_device_to_room', async (data) => {
         try {
             const { deviceUid, name, roomCode, roomPassword, battery } = data;
-            const [room] = await pool.query('SELECT * FROM rooms WHERE codigo = ?', [roomCode]);
+            const formattedRoomCode = roomCode ? roomCode.trim().toUpperCase() : '';
+            
+            const [room] = await pool.query('SELECT * FROM rooms WHERE codigo = ?', [formattedRoomCode]);
 
             if (!room || room.length === 0) {
-                console.log(`[Auth Error] La sala ${roomCode} no existe.`);
+                console.log(`[Auth Error] La sala ${formattedRoomCode} no existe.`);
                 socket.emit('room_auth_error', { message: 'La sala no existe' });
                 return;
             }
 
             const isValidPassword = await bcrypt.compare(roomPassword, room[0].contrasena);
             if (!isValidPassword) {
-                console.log(`[Auth Error] Contraseña incorrecta para la sala ${roomCode}`);
+                console.log(`[Auth Error] Contraseña incorrecta para la sala ${formattedRoomCode}`);
                 socket.emit('room_auth_error', { message: 'Contraseña incorrecta' });
                 return;
             }
 
-            socket.join(roomCode);
+            socket.join(formattedRoomCode);
 
             global.activeDevices = global.activeDevices || {};
             global.activeDevices[socket.id] = {
+                id: socket.id, // <--- IMPORTANTE: Definido como 'id' para que el frontend lo lea bien
                 socketId: socket.id,
                 deviceUid,
                 name: name || 'Android Device',
-                roomCode,
+                roomCode: formattedRoomCode,
                 battery: battery || 100
             };
 
-            // 1. IMPORTANTE: Avisamos al celular que su autenticación fue exitosa
+            // 1. Avisamos al celular que su autenticación fue exitosa
             socket.emit('device_registered_success');
 
-            // 2. Actualizamos la lista de dispositivos en el panel web
-            const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === roomCode);
-            io.to(roomCode).emit('update_devices', devicesInRoom);
-            console.log(`[Dispositivo Conectado] ${name} aceptado en la sala ${roomCode}`);
+            // 2. Actualizamos la lista de dispositivos en la sala (incluyendo al panel web conectado)
+            const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === formattedRoomCode);
+            io.to(formattedRoomCode).emit('update_devices', devicesInRoom);
+            
+            console.log(`[Dispositivo Conectado] ${name} aceptado en la sala ${formattedRoomCode}`);
         } catch (error) {
             console.error('Error en registro de dispositivo:', error);
         }
@@ -207,23 +230,16 @@ io.on('connection', (socket) => {
         io.to(targetId).emit('play_audio_chunk', { chunk });
     });
 
+    // 4. Manejo de Desconexiones
     socket.on('disconnect', () => {
-        if (connectedDevices.has(socket.id)) {
-            const dev = connectedDevices.get(socket.id);
-            connectedDevices.delete(socket.id);
-            io.to(`room_${dev.roomCode}`).emit('update_devices', Array.from(connectedDevices.values()).filter(d => d.roomCode === dev.roomCode));
-        }
-    });
-
-    // Obtener salas del usuario autenticado
-    app.get('/api/rooms', async (req, res) => {
-        try {
-            // Opcional: puedes filtrar por owner_id si pasas el token, 
-            // o traer todas las salas para que el usuario las vea.
-            const [rooms] = await pool.query('SELECT * FROM rooms');
-            res.json({ success: true, rooms });
-        } catch (error) {
-            res.status(500).json({ success: false, error: error.message });
+        global.activeDevices = global.activeDevices || {};
+        if (global.activeDevices[socket.id]) {
+            const roomCode = global.activeDevices[socket.id].roomCode;
+            delete global.activeDevices[socket.id];
+            
+            const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === roomCode);
+            io.to(roomCode).emit('update_devices', devicesInRoom);
+            console.log(`[Desconectado] Socket ${socket.id} removido de la sala ${roomCode}`);
         }
     });
 });
