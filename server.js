@@ -219,6 +219,18 @@ io.on('connection', (socket) => {
             io.to(`room_${dev.roomCode}`).emit('update_devices', Array.from(connectedDevices.values()).filter(d => d.roomCode === dev.roomCode));
         }
     });
+
+    // Obtener salas del usuario autenticado
+    app.get('/api/rooms', async (req, res) => {
+        try {
+            // Opcional: puedes filtrar por owner_id si pasas el token, 
+            // o traer todas las salas para que el usuario las vea.
+            const [rooms] = await pool.query('SELECT * FROM rooms');
+            res.json({ success: true, rooms });
+        } catch (error) {
+            res.status(500).json({ success: false, error: error.message });
+        }
+    });
 });
 
 // Railway asigna el puerto mediante process.env.PORT automáticamente
