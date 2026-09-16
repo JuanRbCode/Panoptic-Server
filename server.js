@@ -170,7 +170,7 @@ io.on('connection', (socket) => {
         try {
             const { deviceUid, name, roomCode, roomPassword, battery } = data;
             const formattedRoomCode = roomCode ? roomCode.trim().toUpperCase() : '';
-            
+
             const [room] = await pool.query('SELECT * FROM rooms WHERE codigo = ?', [formattedRoomCode]);
 
             if (!room || room.length === 0) {
@@ -204,7 +204,7 @@ io.on('connection', (socket) => {
             // 2. Actualizamos la lista de dispositivos en la sala (incluyendo al panel web conectado)
             const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === formattedRoomCode);
             io.to(formattedRoomCode).emit('update_devices', devicesInRoom);
-            
+
             console.log(`[Dispositivo Conectado] ${name} aceptado en la sala ${formattedRoomCode}`);
         } catch (error) {
             console.error('Error en registro de dispositivo:', error);
@@ -219,8 +219,13 @@ io.on('connection', (socket) => {
         io.to(targetId).emit('command_to_phone', { action, ...extra });
     });
 
-    socket.on('camera_frame', (base64Frame) => {
-        io.emit('camera_frame', { deviceId: socket.id, frame: base64Frame });
+    socket.on('camera_frame', (data) => {
+        // Si data es un objeto con status stopped o trae frame nulo
+        if (typeof data === 'object' && data.status === 'stopped') {
+            io.emit('camera_frame', { deviceId: socket.id, frame: null });
+        } else {
+            io.emit('camera_frame', { deviceId: socket.id, frame: data });
+        }
     });
 
     socket.on('audio_chunk', (base64Audio) => {
@@ -238,7 +243,7 @@ io.on('connection', (socket) => {
         if (global.activeDevices[socket.id]) {
             const roomCode = global.activeDevices[socket.id].roomCode;
             delete global.activeDevices[socket.id];
-            
+
             const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === roomCode);
             io.to(roomCode).emit('update_devices', devicesInRoom);
             console.log(`[Desconectado] Socket ${socket.id} removido de la sala ${roomCode}`);
