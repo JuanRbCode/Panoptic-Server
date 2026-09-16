@@ -212,8 +212,10 @@ io.on('connection', (socket) => {
     });
 
     // 3. Comandos y Streams
+    // CORRECCIÓN CLAVE DE COMANDOS: Usar socketId exacto
     socket.on('send_command_to_device', (data) => {
         const { targetId, action, ...extra } = data;
+        console.log(`[Comando] Reenviando acción '${action}' al targetId: ${targetId}`);
         io.to(targetId).emit('command_to_phone', { action, ...extra });
     });
 
