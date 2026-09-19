@@ -16,7 +16,7 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'clave_secreta_super_segura_mirror_dark';
+const JWT_SECRET = process.env.JWT_SECRET || '123fa9df769c89d5a02ad4374071776a992f2c5c3d50cab49219ce4f720f26a2';
 
 // ----------------------------------------------------
 // INICIALIZACIÓN DE TABLAS EN MYSQL (Automática al arrancar)
