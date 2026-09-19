@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const pool = require('./db');
+const verifyToken = require('./auth');
 
 const app = express();
 app.use(express.json());
@@ -63,7 +64,7 @@ async function initDB() {
 initDB();
 
 // ----------------------------------------------------
-// RUTAS REST: AUTENTICACIÓN Y GESTIÓN DE SALAS
+// RUTAS REST: AUTENTICACIÓN Y GESTIÓN DE USUARIOS
 // ----------------------------------------------------
 
 // Registrar Usuario
@@ -106,10 +107,51 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-// Crear Sala
-app.post('/api/rooms/create', async (req, res) => {
+// Actualizar datos de Perfil de Usuario
+app.put('/api/auth/profile', verifyToken, async (req, res) => {
     try {
-        const { nombre, codigo, contrasena, owner_id } = req.body;
+        const userId = req.user.id;
+        const { name, username, correo, password } = req.body;
+
+        if (password) {
+            const hashedPassword = await bcrypt.hash(password, 10);
+            await pool.query(
+                'UPDATE users SET name = ?, username = ?, correo = ?, password = ? WHERE id = ?',
+                [name, username, correo, hashedPassword, userId]
+            );
+        } else {
+            await pool.query(
+                'UPDATE users SET name = ?, username = ?, correo = ? WHERE id = ?',
+                [name, username, correo, userId]
+            );
+        }
+
+        res.json({ success: true, message: "Perfil actualizado con éxito" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Eliminar Cuenta de Usuario (Elimina en cascada sus salas y dispositivos)
+app.delete('/api/auth/profile', verifyToken, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        await pool.query('DELETE FROM users WHERE id = ?', [userId]);
+        res.json({ success: true, message: "Cuenta y datos asociados eliminados correctamente" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ----------------------------------------------------
+// RUTAS REST: GESTIÓN DE SALAS (SEGURIZADAS CON JWT)
+// ----------------------------------------------------
+
+// Crear Sala (Solo si está logueado)
+app.post('/api/rooms/create', verifyToken, async (req, res) => {
+    try {
+        const { nombre, codigo, contrasena } = req.body;
+        const owner_id = req.user.id; // Asignado automáticamente por el token del usuario logueado
         const hashedRoomPass = await bcrypt.hash(contrasena, 10);
 
         await pool.query(
@@ -123,11 +165,61 @@ app.post('/api/rooms/create', async (req, res) => {
     }
 });
 
-// Obtener salas (Ruta REST independiente fuera de la conexión de sockets)
-app.get('/api/rooms', async (req, res) => {
+// Obtener solo las salas del usuario autenticado
+app.get('/api/rooms', verifyToken, async (req, res) => {
     try {
-        const [rooms] = await pool.query('SELECT * FROM rooms');
+        const userId = req.user.id;
+        const [rooms] = await pool.query('SELECT id, nombre, codigo, created_at FROM rooms WHERE owner_id = ?', [userId]);
         res.json({ success: true, rooms });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Actualizar Sala (Solo si pertenece al usuario autenticado)
+app.put('/api/rooms/:id', verifyToken, async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const userId = req.user.id;
+        const { nombre, codigo, contrasena } = req.body;
+
+        // Validar que la sala pertenezca al usuario
+        const [rooms] = await pool.query('SELECT * FROM rooms WHERE id = ? AND owner_id = ?', [roomId, userId]);
+        if (rooms.length === 0) {
+            return res.status(403).json({ success: false, message: "No autorizado o sala no encontrada" });
+        }
+
+        if (contrasena) {
+            const hashedRoomPass = await bcrypt.hash(contrasena, 10);
+            await pool.query(
+                'UPDATE rooms SET nombre = ?, codigo = ?, contrasena = ? WHERE id = ?',
+                [nombre, codigo, hashedRoomPass, roomId]
+            );
+        } else {
+            await pool.query(
+                'UPDATE rooms SET nombre = ?, codigo = ? WHERE id = ?',
+                [nombre, codigo, roomId]
+            );
+        }
+
+        res.json({ success: true, message: "Sala actualizada con éxito" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Eliminar Sala (Solo si pertenece al usuario autenticado)
+app.delete('/api/rooms/:id', verifyToken, async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const userId = req.user.id;
+
+        const [result] = await pool.query('DELETE FROM rooms WHERE id = ? AND owner_id = ?', [roomId, userId]);
+        if (result.affectedRows === 0) {
+            return res.status(403).json({ success: false, message: "No autorizado o sala no encontrada" });
+        }
+
+        res.json({ success: true, message: "Sala eliminada con éxito" });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -153,19 +245,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 1.1 NUEVO: Permitir que el panel web se una a la sala de sockets seleccionada
+    // 1.1 Unirse a la sala de sockets seleccionada
     socket.on('join_room_panel', (roomCode) => {
         const formattedRoomCode = roomCode ? roomCode.trim().toUpperCase() : '';
         socket.join(formattedRoomCode);
         console.log(`[🖥️ Panel Web] Se unió a la sala socket: ${formattedRoomCode}`);
 
-        // Enviar la lista actual de dispositivos de esa sala de inmediato al panel
         global.activeDevices = global.activeDevices || {};
         const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === formattedRoomCode);
         socket.emit('update_devices', devicesInRoom);
     });
 
-    // 2. Registro del dispositivo móvil validando la Sala (Código y Contraseña)
+    // 2. Registro del dispositivo móvil validando la Sala
     socket.on('register_device_to_room', async (data) => {
         try {
             const { deviceUid, name, roomCode, roomPassword, battery } = data;
@@ -190,7 +281,7 @@ io.on('connection', (socket) => {
 
             global.activeDevices = global.activeDevices || {};
             global.activeDevices[socket.id] = {
-                id: socket.id, // <--- IMPORTANTE: Definido como 'id' para que el frontend lo lea bien
+                id: socket.id,
                 socketId: socket.id,
                 deviceUid,
                 name: name || 'Android Device',
@@ -198,10 +289,8 @@ io.on('connection', (socket) => {
                 battery: battery || 100
             };
 
-            // 1. Avisamos al celular que su autenticación fue exitosa
             socket.emit('device_registered_success');
 
-            // 2. Actualizamos la lista de dispositivos en la sala (incluyendo al panel web conectado)
             const devicesInRoom = Object.values(global.activeDevices).filter(d => d.roomCode === formattedRoomCode);
             io.to(formattedRoomCode).emit('update_devices', devicesInRoom);
 
@@ -212,7 +301,6 @@ io.on('connection', (socket) => {
     });
 
     // 3. Comandos y Streams
-    // CORRECCIÓN CLAVE DE COMANDOS: Usar socketId exacto
     socket.on('send_command_to_device', (data) => {
         const { targetId, action, ...extra } = data;
         console.log(`[Comando] Reenviando acción '${action}' al targetId: ${targetId}`);
@@ -220,7 +308,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('camera_frame', (data) => {
-        // Si data es un objeto con status stopped o trae frame nulo
         if (typeof data === 'object' && data.status === 'stopped') {
             io.emit('camera_frame', { deviceId: socket.id, frame: null });
         } else {
@@ -228,13 +315,17 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Audio que va del Celular hacia la PC (Escuchar el entorno del celular)
     socket.on('audio_chunk', (base64Audio) => {
         io.emit('audio_chunk', { deviceId: socket.id, chunk: base64Audio });
     });
 
+    // Audio bidireccional corregido: Del Panel Web (Microfóno de la PC) hacia el Celular
     socket.on('client_audio_chunk', (data) => {
         const { targetId, chunk } = data;
-        io.to(targetId).emit('play_audio_chunk', { chunk });
+        if (targetId) {
+            io.to(targetId).emit('play_audio_chunk', { chunk });
+        }
     });
 
     // 4. Manejo de Desconexiones
@@ -251,8 +342,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// Railway asigna el puerto mediante process.env.PORT automáticamente
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor Mirror-Dark corriendo en puerto ${PORT}`);
+    console.log(`Servidor Panoptic corriendo en puerto ${PORT}`);
 });
