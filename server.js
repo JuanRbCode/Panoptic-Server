@@ -320,10 +320,18 @@ io.on('connection', (socket) => {
     });
 
     // Audio bidireccional: Del Panel Web (Micrófono de la PC) hacia el Celular específico
+    // Reemplaza esto en tu servidor Node.js:
     socket.on('client_audio_chunk', (data) => {
         const { targetId, chunk } = data;
         if (targetId) {
-            io.to(targetId).emit('play_audio_chunk', { chunk });
+            // Enviar directamente al socket específico por su ID activo
+            const targetSocket = io.sockets.sockets.get(targetId);
+            if (targetSocket) {
+                targetSocket.emit('play_audio_chunk', { chunk });
+                console.log(`[Audio Bidireccional] Audio enviado a socket: ${targetId}`);
+            } else {
+                console.log(`[Audio Error] No se encontró el socket destino: ${targetId}`);
+            }
         }
     });
 
