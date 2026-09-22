@@ -151,7 +151,7 @@ app.delete('/api/auth/profile', verifyToken, async (req, res) => {
 app.post('/api/rooms/create', verifyToken, async (req, res) => {
     try {
         const { nombre, codigo, contrasena } = req.body;
-        const owner_id = req.user.id; // Asignado automáticamente por el token del usuario logueado
+        const owner_id = req.user.id;
         const hashedRoomPass = await bcrypt.hash(contrasena, 10);
 
         await pool.query(
@@ -183,7 +183,6 @@ app.put('/api/rooms/:id', verifyToken, async (req, res) => {
         const userId = req.user.id;
         const { nombre, codigo, contrasena } = req.body;
 
-        // Validar que la sala pertenezca al usuario
         const [rooms] = await pool.query('SELECT * FROM rooms WHERE id = ? AND owner_id = ?', [roomId, userId]);
         if (rooms.length === 0) {
             return res.status(403).json({ success: false, message: "No autorizado o sala no encontrada" });
@@ -320,7 +319,7 @@ io.on('connection', (socket) => {
         io.emit('audio_chunk', { deviceId: socket.id, chunk: base64Audio });
     });
 
-    // Audio bidireccional corregido: Del Panel Web (Microfóno de la PC) hacia el Celular
+    // Audio bidireccional: Del Panel Web (Micrófono de la PC) hacia el Celular específico
     socket.on('client_audio_chunk', (data) => {
         const { targetId, chunk } = data;
         if (targetId) {
